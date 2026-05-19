@@ -95,16 +95,16 @@ class admin_plugin_hideip extends AdminPlugin
     {
         echo '<h1>Hide IP</h1>';
         echo '<p>This page rewrites historical IP addresses on disk to '
-            . '<code>' . hsc(self::PLACEHOLDER_IP) . '</code>. New edits are already '
-            . 'anonymised by the action component of this plugin (loads on every request). '
+            . '<code>' . hsc(self::PLACEHOLDER_IP) . '</code>.<br>New edits are already '
+            . 'anonymised by the action component of this plugin (loads on every request).<br>'
             . 'Timestamps and authorship are preserved.</p>';
 
-        echo '<p style="background:#fff3cd;border:1px solid #ffeeba;padding:8px;border-radius:4px;">'
-            . '<strong>This action is destructive.</strong> Real IP addresses recorded in '
+        echo '<p style="background:#fff3cd; border:1px solid #ffeeba; padding:8px; border-radius:4px;">'
+            . '<strong>This action is destructive.</strong><br>Real IP addresses recorded in '
             . 'page and media changelogs and in page metadata will be replaced and cannot '
-            . 'be recovered from these files. The <code>data/attic/</code> revision archives are '
+            . 'be recovered from these files.<br>The <code>data/attic/</code> revision archives are '
             . 'not modified — if your wiki retains those, IPs from saved revisions remain '
-            . 'inside them. Take a backup with the Site Backup plugin first if you want '
+            . 'inside them.<br>Take a backup with the Site Backup plugin first if you want '
             . 'a recovery point.'
             . '</p>';
 
@@ -130,7 +130,7 @@ class admin_plugin_hideip extends AdminPlugin
 
         $form->addTagOpen('p');
         $form->addButton('hideip_action', 'Preview (count only)')->val('preview');
-        $form->addHTML(' ');
+        $form->addHTML(' &nbsp;&nbsp; ');
         $form->addButton('hideip_action', 'Scrub now')->val('scrub');
         $form->addTagClose('p');
 
