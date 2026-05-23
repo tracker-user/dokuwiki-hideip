@@ -44,7 +44,7 @@ class admin_plugin_hideip extends AdminPlugin
 
     public function getMenuSort()
     {
-        return 1010;   // sit just after sitebackup (1000)
+        return 1000;
     }
 
     public function getMenuText($language)
