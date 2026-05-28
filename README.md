@@ -81,10 +81,14 @@ Take a backup with the Site Backup plugin first if you want a recovery point —
 - **File mtimes preserved.** The on-disk modification time of each file is restored after the scrub, so it doesn't look like everything was just edited.
 - **Idempotent.** Re-running scrub is safe — already-anonymised entries are skipped, no double-writes.
 
+## Trusted-proxy caveat
+
+The action component replaces `$_SERVER['REMOTE_ADDR']` at `INIT_LANG_LOAD`, which fires after DokuWiki's base-URL constants (`DOKU_URL`, `DOKU_BASE`) are already frozen into place (init.php:103-104). However, runtime calls to `is_ssl()` after init — used by some URL-building helpers — also check `REMOTE_ADDR` against `$conf['trustedproxy']` to decide whether to trust an `HTTP_X_FORWARDED_PROTO` header. If your wiki is behind a reverse proxy that relies on this check, set `$conf['baseurl']` explicitly in `conf/local.php` so DokuWiki does not consult `REMOTE_ADDR` for URL or SSL construction.
+
 ## Compatibility
 
 - DokuWiki `2025-05-14b "Librarian"` and onwards (uses the modern namespaced `dokuwiki\Extension\AdminPlugin` / `ActionPlugin` base classes).
-- PHP 7.4+.
+- PHP 8.0+ (`str_ends_with()` used in the admin component).
 - No external dependencies.
 
 ## License

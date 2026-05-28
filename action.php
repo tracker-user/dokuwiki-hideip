@@ -1,12 +1,13 @@
 <?php
+if (!defined('DOKU_INC')) die();
+
 /**
  * Hide IP — action component.
  *
- * Hooks INIT_LANG_LOAD (same point in DokuWiki's boot the anonip plugin uses)
- * and rewrites the server-side IP variables so that every later piece of code
- * — clientIP(), $INPUT->server->str('REMOTE_ADDR'), changelog writers, page
- * metadata, the mailer's X-Originating-IP header, AJAX info, etc. — sees a
- * constant placeholder instead of the real address.
+ * Hooks INIT_LANG_LOAD and rewrites the server-side IP variables so that every
+ * later piece of code — clientIP(), $INPUT->server->str('REMOTE_ADDR'),
+ * changelog writers, page metadata, the mailer's X-Originating-IP header,
+ * AJAX info, etc. — sees a constant placeholder instead of the real address.
  *
  * Why a constant ('0.0.0.0') rather than a session-hashed pseudo-IPv6:
  *  - This wiki has no anonymous edits; the username field already
@@ -17,6 +18,11 @@
  *  - Page locking is not affected: inc/common.php::lock() writes only the
  *    username when REMOTE_USER is set (which it always will be here), and
  *    unlock() has session_id() as a fallback even when it isn't.
+ *
+ * Note: DOKU_URL / DOKU_BASE are constants defined at init.php:103-104,
+ * before INIT_LANG_LOAD fires. If your wiki relies on trustedproxy-based
+ * SSL detection at runtime (is_ssl() called after init), set $conf['baseurl']
+ * explicitly so DokuWiki does not consult REMOTE_ADDR for URL construction.
  */
 
 use dokuwiki\Extension\ActionPlugin;
@@ -26,24 +32,28 @@ use dokuwiki\Extension\Event;
 class action_plugin_hideip extends ActionPlugin
 {
     /** The placeholder all anonymised reads will return. */
-    const PLACEHOLDER_IP = '0.0.0.0';
+    public const PLACEHOLDER_IP = '0.0.0.0';
 
     /**
+     * Register event hooks.
+     *
      * @param EventHandler $controller
+     * @return void
      */
     public function register(EventHandler $controller)
     {
-        // INIT_LANG_LOAD fires after init.php has applied any trusted-proxy
-        // X-Forwarded-For rewriting (lines ~500/550 of init.php), so by the
-        // time we run, $_SERVER['REMOTE_ADDR'] holds the resolved client IP
-        // that DokuWiki would normally record. We clobber it before any
-        // downstream code reads it again.
+        // INIT_LANG_LOAD fires at init.php:233, after the plugin controller and
+        // $INPUT are ready, but before auth_setup() and any page-handling code
+        // reads the client IP. Clobbering here covers every downstream consumer.
         $controller->register_hook('INIT_LANG_LOAD', 'BEFORE', $this, 'handleAnonymise');
     }
 
     /**
+     * Overwrite REMOTE_ADDR and all forwarding headers with the placeholder.
+     *
      * @param Event $event  unused, dispatch signature only
      * @param mixed $param  unused
+     * @return void
      */
     public function handleAnonymise(Event $event, $param)
     {

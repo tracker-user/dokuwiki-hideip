@@ -1,4 +1,6 @@
 <?php
+if (!defined('DOKU_INC')) die();
+
 /**
  * Hide IP — admin component.
  *
@@ -32,24 +34,34 @@ class admin_plugin_hideip extends AdminPlugin
 {
     /** Mirror of action_plugin_hideip::PLACEHOLDER_IP. Kept inline so this
      *  admin component can run without the action component being loaded. */
-    const PLACEHOLDER_IP = '0.0.0.0';
+    public const PLACEHOLDER_IP = '0.0.0.0';
 
-    /** Random suffix length for tmp files; .tmp_<8 hex>. */
-    const TMP_SUFFIX_BYTES = 4;
+    /** Random suffix length for tmp files; .hideip_tmp_<8 hex>. */
+    public const TMP_SUFFIX_BYTES = 4;
 
+    /**
+     * @return bool
+     */
     public function forAdminOnly()
     {
         return true;
     }
 
+    /**
+     * @return int
+     */
     public function getMenuSort()
     {
         return 1000;
     }
 
+    /**
+     * @param string $language
+     * @return string
+     */
     public function getMenuText($language)
     {
-        return 'Hide IP';
+        return $this->getLang('menu');
     }
 
     /* ----------------------------------------------------------------- *
@@ -62,6 +74,11 @@ class admin_plugin_hideip extends AdminPlugin
     /** @var array|null per-section scrub results: [section => [files, ipLines, errors]] */
     protected $scrub = null;
 
+    /**
+     * Process form submissions (preview and scrub actions).
+     *
+     * @return void
+     */
     public function handle()
     {
         global $INPUT;
@@ -72,7 +89,7 @@ class admin_plugin_hideip extends AdminPlugin
         $action = $INPUT->str('hideip_action');
         if ($action !== 'preview' && $action !== 'scrub') return;
 
-        if ($action === 'scrub' && ($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        if ($action === 'scrub' && $INPUT->server->str('REQUEST_METHOD', 'GET') !== 'POST') {
             msg('Hide IP: scrub must be submitted via POST.', -1);
             return;
         }
@@ -91,6 +108,11 @@ class admin_plugin_hideip extends AdminPlugin
         }
     }
 
+    /**
+     * Render the admin page.
+     *
+     * @return void
+     */
     public function html()
     {
         echo '<h1>Hide IP</h1>';
@@ -122,6 +144,11 @@ class admin_plugin_hideip extends AdminPlugin
      *  Form
      * ----------------------------------------------------------------- */
 
+    /**
+     * Render the preview/scrub action form.
+     *
+     * @return void
+     */
     protected function renderForm()
     {
         $form = new Form(['method' => 'POST', 'id' => 'hideip_form']);
@@ -151,8 +178,8 @@ class admin_plugin_hideip extends AdminPlugin
     {
         global $conf;
 
-        @set_time_limit(0);
-        @ignore_user_abort(true);
+        if (function_exists('set_time_limit')) set_time_limit(0);
+        if (function_exists('ignore_user_abort')) ignore_user_abort(true);
 
         $sections = [
             'Page changelogs (data/meta/*.changes)' => [
@@ -207,8 +234,8 @@ class admin_plugin_hideip extends AdminPlugin
                 $base = basename($path);
 
                 // Filter by extension matching the section we're walking.
-                if ($kind === 'changes' && substr($base, -8) !== '.changes') continue;
-                if ($kind === 'meta'    && substr($base, -5) !== '.meta')    continue;
+                if ($kind === 'changes' && !str_ends_with($base, '.changes')) continue;
+                if ($kind === 'meta'    && !str_ends_with($base, '.meta'))    continue;
 
                 $count = ($kind === 'changes')
                     ? $this->processChangelog($path, $mutate)
@@ -245,7 +272,7 @@ class admin_plugin_hideip extends AdminPlugin
      */
     protected function processChangelog($path, $mutate)
     {
-        $content = @file_get_contents($path);
+        $content = file_get_contents($path);
         if ($content === false) {
             throw new RuntimeException('cannot read');
         }
@@ -298,13 +325,11 @@ class admin_plugin_hideip extends AdminPlugin
      */
     protected function processMetaFile($path, $mutate)
     {
-        $raw = @file_get_contents($path);
+        $raw = file_get_contents($path);
         if ($raw === false) throw new RuntimeException('cannot read');
         if ($raw === '')    return 0;
 
-        // Use the standard error-silenced unserialize. Suppress notices because
-        // unknown classes inside the serialized data are not our problem here.
-        $meta = @unserialize($raw, ['allowed_classes' => false]);
+        $meta = unserialize($raw, ['allowed_classes' => false]);
         if (!is_array($meta)) return 0;   // corrupt or non-meta - leave alone
 
         $changed = 0;
@@ -336,31 +361,39 @@ class admin_plugin_hideip extends AdminPlugin
      */
     protected function atomicWrite($path, $content)
     {
-        $origMtime = @filemtime($path);
+        $origMtime = filemtime($path);
         $tmp = $path . '.hideip_tmp_' . bin2hex(random_bytes(self::TMP_SUFFIX_BYTES));
 
-        $ok = @file_put_contents($tmp, $content, LOCK_EX);
+        $ok = file_put_contents($tmp, $content, LOCK_EX);
         if ($ok === false) {
             @unlink($tmp);
             throw new RuntimeException('failed to write temp file');
         }
 
         // Copy permissions from the original so the rename doesn't change them.
-        $origPerms = @fileperms($path);
-        if ($origPerms !== false) @chmod($tmp, $origPerms & 0777);
+        $origPerms = fileperms($path);
+        if ($origPerms !== false) chmod($tmp, $origPerms & 0777);
 
-        if (!@rename($tmp, $path)) {
+        if (!rename($tmp, $path)) {
             @unlink($tmp);
             throw new RuntimeException('atomic rename failed');
         }
 
-        if ($origMtime !== false) @touch($path, $origMtime);
+        if ($origMtime !== false) touch($path, $origMtime);
     }
 
     /* ----------------------------------------------------------------- *
      *  Presentation
      * ----------------------------------------------------------------- */
 
+    /**
+     * Render the results table for a preview or scrub run.
+     *
+     * @param string  $heading
+     * @param array[] $results   [section_label => [files, lines, errors]]
+     * @param bool    $wasScrub
+     * @return void
+     */
     protected function renderResults($heading, array $results, $wasScrub)
     {
         echo '<h2>' . hsc($heading) . '</h2>';
