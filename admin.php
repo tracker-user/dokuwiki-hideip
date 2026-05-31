@@ -23,6 +23,10 @@ if (!defined('DOKU_INC')) die();
  * is then rename()d into place. rename() is atomic on a single filesystem,
  * so a concurrent reader either sees the old file or the new file.
  *
+ * Concurrency: processChangelog() and processMetaFile() hold io_lock() across
+ * the full read-modify-write cycle when mutating, so concurrent DokuWiki
+ * changelog appends (which also use io_lock) are properly serialized.
+ *
  * Idempotent: running scrub twice is a no-op on lines that already hold the
  * placeholder.
  */
@@ -90,7 +94,7 @@ class admin_plugin_hideip extends AdminPlugin
         if ($action !== 'preview' && $action !== 'scrub') return;
 
         if ($action === 'scrub' && $INPUT->server->str('REQUEST_METHOD', 'GET') !== 'POST') {
-            msg('Hide IP: scrub must be submitted via POST.', -1);
+            msg($this->getLang('err_post_only'), -1);
             return;
         }
 
@@ -101,7 +105,7 @@ class admin_plugin_hideip extends AdminPlugin
             // forAdminOnly + isAccessibleByCurrentUser, but the scrub mutates
             // production data; one more check is cheap).
             if (!auth_isadmin()) {
-                msg('Hide IP: admin access required.', -1);
+                msg($this->getLang('err_admin_required'), -1);
                 return;
             }
             $this->scrub = $this->runScan(true);
@@ -115,28 +119,29 @@ class admin_plugin_hideip extends AdminPlugin
      */
     public function html()
     {
-        echo '<h1>Hide IP</h1>';
-        echo '<p>This page rewrites historical IP addresses on disk to '
-            . '<code>' . hsc(self::PLACEHOLDER_IP) . '</code>.<br>New edits are already '
-            . 'anonymised by the action component of this plugin (loads on every request).<br>'
-            . 'Timestamps and authorship are preserved.</p>';
+        echo '<h1>' . hsc($this->getLang('menu')) . '</h1>';
+        echo '<p>'
+            . sprintf($this->getLang('intro_rewrite'), '<code>' . hsc(self::PLACEHOLDER_IP) . '</code>')
+            . '<br>'
+            . $this->getLang('intro_realtime')
+            . '<br>'
+            . $this->getLang('intro_preserved')
+            . '</p>';
 
         echo '<p style="background:#fff3cd; border:1px solid #ffeeba; padding:8px; border-radius:4px;">'
-            . '<strong>This action is destructive.</strong><br>Real IP addresses recorded in '
-            . 'page and media changelogs and in page metadata will be replaced and cannot '
-            . 'be recovered from these files.<br>The <code>data/attic/</code> revision archives are '
-            . 'not modified — if your wiki retains those, IPs from saved revisions remain '
-            . 'inside them.<br>Take a backup with the Site Backup plugin first if you want '
-            . 'a recovery point.'
+            . '<strong>' . $this->getLang('warn_heading') . '</strong><br>'
+            . $this->getLang('warn_data') . '<br>'
+            . sprintf($this->getLang('warn_attic'), '<code>data/attic/</code>') . '<br>'
+            . $this->getLang('warn_backup')
             . '</p>';
 
         $this->renderForm();
 
         if ($this->preview !== null) {
-            $this->renderResults('Preview', $this->preview, false);
+            $this->renderResults($this->getLang('heading_preview'), $this->preview, false);
         }
         if ($this->scrub !== null) {
-            $this->renderResults('Scrub complete', $this->scrub, true);
+            $this->renderResults($this->getLang('heading_scrub_done'), $this->scrub, true);
         }
     }
 
@@ -156,9 +161,9 @@ class admin_plugin_hideip extends AdminPlugin
         $form->setHiddenField('page', 'hideip');
 
         $form->addTagOpen('p');
-        $form->addButton('hideip_action', 'Preview (count only)')->val('preview');
+        $form->addButton('hideip_action', $this->getLang('btn_preview'))->val('preview');
         $form->addHTML(' &nbsp;&nbsp; ');
-        $form->addButton('hideip_action', 'Scrub now')->val('scrub');
+        $form->addButton('hideip_action', $this->getLang('btn_scrub'))->val('scrub');
         $form->addTagClose('p');
 
         echo $form->toHTML();
@@ -182,15 +187,15 @@ class admin_plugin_hideip extends AdminPlugin
         if (function_exists('ignore_user_abort')) ignore_user_abort(true);
 
         $sections = [
-            'Page changelogs (data/meta/*.changes)' => [
+            $this->getLang('section_page_changes')  => [
                 'root' => $conf['metadir'],
                 'kind' => 'changes',
             ],
-            'Media changelogs (data/media_meta/*.changes)' => [
+            $this->getLang('section_media_changes') => [
                 'root' => $conf['mediametadir'],
                 'kind' => 'changes',
             ],
-            'Page metadata (data/meta/*.meta)' => [
+            $this->getLang('section_page_meta')     => [
                 'root' => $conf['metadir'],
                 'kind' => 'meta',
             ],
@@ -206,6 +211,9 @@ class admin_plugin_hideip extends AdminPlugin
     /**
      * Walk one section root, dispatching each candidate file to the right scrubber.
      *
+     * @param string $root
+     * @param string $kind    'changes' or 'meta'
+     * @param bool   $mutate
      * @return array{files:int,lines:int,errors:array}
      */
     protected function walkSection($root, $kind, $mutate)
@@ -228,6 +236,7 @@ class admin_plugin_hideip extends AdminPlugin
         }
 
         foreach ($it as $info) {
+            $path = '?';
             try {
                 if (!$info->isFile() || !$info->isReadable()) continue;
                 $path = $info->getPathname();
@@ -246,7 +255,7 @@ class admin_plugin_hideip extends AdminPlugin
                     $stats['lines'] += $count;
                 }
             } catch (Exception $e) {
-                $stats['errors'][] = ($path ?? '?') . ': ' . $e->getMessage();
+                $stats['errors'][] = $path . ': ' . $e->getMessage();
             }
         }
         return $stats;
@@ -266,46 +275,54 @@ class admin_plugin_hideip extends AdminPlugin
      * already equals the placeholder (idempotent) or is empty (already scrubbed
      * by an older tool like the GDPR plugin which blanked it).
      *
+     * When mutating, io_lock() is held for the full read-modify-write cycle so
+     * concurrent changelog appends (which also use io_lock) are serialized.
+     *
      * @param string $path
      * @param bool   $mutate  false = count lines that would change, true = rewrite
      * @return int            number of lines counted/changed
      */
     protected function processChangelog($path, $mutate)
     {
-        $content = file_get_contents($path);
-        if ($content === false) {
-            throw new RuntimeException('cannot read');
+        if ($mutate) io_lock($path);
+        try {
+            $content = file_get_contents($path);
+            if ($content === false) {
+                throw new RuntimeException('cannot read');
+            }
+
+            // Use \n split so we can rejoin without modification. Trailing newline
+            // (if any) becomes an empty final element we filter when rebuilding.
+            $lines = explode("\n", $content);
+            $hadTrailingNewline = ($content !== '' && substr($content, -1) === "\n");
+            if ($hadTrailingNewline) array_pop($lines);   // drop the empty tail
+
+            $changed = 0;
+            foreach ($lines as $i => $line) {
+                if ($line === '') continue;                 // skip blank lines in-place
+                $fields = explode("\t", $line);
+                if (count($fields) < 2) continue;           // malformed; leave alone
+
+                $ip = $fields[1];
+                if ($ip === self::PLACEHOLDER_IP) continue; // already scrubbed
+                if (trim($ip) === '') continue;             // already blanked (GDPR-style)
+
+                $fields[1] = self::PLACEHOLDER_IP;
+                $lines[$i] = implode("\t", $fields);
+                $changed++;
+            }
+
+            if ($changed === 0) return 0;
+            if (!$mutate) return $changed;
+
+            $newContent = implode("\n", $lines);
+            if ($hadTrailingNewline) $newContent .= "\n";
+
+            $this->atomicWrite($path, $newContent);
+            return $changed;
+        } finally {
+            if ($mutate) io_unlock($path);
         }
-
-        // Use \n split so we can rejoin without modification. Trailing newline
-        // (if any) becomes an empty final element we filter when rebuilding.
-        $lines = explode("\n", $content);
-        $hadTrailingNewline = ($content !== '' && substr($content, -1) === "\n");
-        if ($hadTrailingNewline) array_pop($lines);   // drop the empty tail
-
-        $changed = 0;
-        foreach ($lines as $i => $line) {
-            if ($line === '') continue;                 // skip blank lines in-place
-            $fields = explode("\t", $line);
-            if (count($fields) < 2) continue;           // malformed; leave alone
-
-            $ip = $fields[1];
-            if ($ip === self::PLACEHOLDER_IP) continue; // already scrubbed
-            if (trim($ip) === '') continue;             // already blanked (GDPR-style)
-
-            $fields[1] = self::PLACEHOLDER_IP;
-            $lines[$i] = implode("\t", $fields);
-            $changed++;
-        }
-
-        if ($changed === 0) return 0;
-        if (!$mutate)       return $changed;
-
-        $newContent = implode("\n", $lines);
-        if ($hadTrailingNewline) $newContent .= "\n";
-
-        $this->atomicWrite($path, $newContent);
-        return $changed;
     }
 
     /* ----------------------------------------------------------------- *
@@ -319,35 +336,43 @@ class admin_plugin_hideip extends AdminPlugin
      * structure (see inc/parserutils.php::p_save_metadata). The IP can live
      * under last_change.ip in either branch.
      *
+     * When mutating, io_lock() is held for the full read-modify-write cycle so
+     * concurrent metadata saves (which also use io_lock) are serialized.
+     *
      * @param string $path
      * @param bool   $mutate
      * @return int   number of ip slots changed (0..2 per file)
      */
     protected function processMetaFile($path, $mutate)
     {
-        $raw = file_get_contents($path);
-        if ($raw === false) throw new RuntimeException('cannot read');
-        if ($raw === '')    return 0;
+        if ($mutate) io_lock($path);
+        try {
+            $raw = file_get_contents($path);
+            if ($raw === false) throw new RuntimeException('cannot read');
+            if ($raw === '')    return 0;
 
-        $meta = unserialize($raw, ['allowed_classes' => false]);
-        if (!is_array($meta)) return 0;   // corrupt or non-meta - leave alone
+            $meta = unserialize($raw, ['allowed_classes' => false]);
+            if (!is_array($meta)) return 0;   // corrupt or non-meta - leave alone
 
-        $changed = 0;
-        foreach (['current', 'persistent'] as $branch) {
-            if (
-                isset($meta[$branch]['last_change']['ip'])
-                && $meta[$branch]['last_change']['ip'] !== self::PLACEHOLDER_IP
-            ) {
-                $meta[$branch]['last_change']['ip'] = self::PLACEHOLDER_IP;
-                $changed++;
+            $changed = 0;
+            foreach (['current', 'persistent'] as $branch) {
+                if (
+                    isset($meta[$branch]['last_change']['ip'])
+                    && $meta[$branch]['last_change']['ip'] !== self::PLACEHOLDER_IP
+                ) {
+                    $meta[$branch]['last_change']['ip'] = self::PLACEHOLDER_IP;
+                    $changed++;
+                }
             }
+
+            if ($changed === 0) return 0;
+            if (!$mutate) return $changed;
+
+            $this->atomicWrite($path, serialize($meta));
+            return $changed;
+        } finally {
+            if ($mutate) io_unlock($path);
         }
-
-        if ($changed === 0) return 0;
-        if (!$mutate)       return $changed;
-
-        $this->atomicWrite($path, serialize($meta));
-        return $changed;
     }
 
     /* ----------------------------------------------------------------- *
@@ -357,6 +382,11 @@ class admin_plugin_hideip extends AdminPlugin
     /**
      * Write $content to $path atomically, preserving the original mtime.
      *
+     * The caller must already hold io_lock($path) when mutating to prevent
+     * concurrent writes from being lost by the rename.
+     *
+     * @param string $path
+     * @param string $content
      * @throws RuntimeException on any unrecoverable failure
      */
     protected function atomicWrite($path, $content)
@@ -366,7 +396,7 @@ class admin_plugin_hideip extends AdminPlugin
 
         $ok = file_put_contents($tmp, $content, LOCK_EX);
         if ($ok === false) {
-            @unlink($tmp);
+            if (is_file($tmp)) unlink($tmp);
             throw new RuntimeException('failed to write temp file');
         }
 
@@ -375,7 +405,7 @@ class admin_plugin_hideip extends AdminPlugin
         if ($origPerms !== false) chmod($tmp, $origPerms & 0777);
 
         if (!rename($tmp, $path)) {
-            @unlink($tmp);
+            if (is_file($tmp)) unlink($tmp);
             throw new RuntimeException('atomic rename failed');
         }
 
@@ -389,8 +419,8 @@ class admin_plugin_hideip extends AdminPlugin
     /**
      * Render the results table for a preview or scrub run.
      *
-     * @param string  $heading
-     * @param array[] $results   [section_label => [files, lines, errors]]
+     * @param string  $heading    pre-translated heading string
+     * @param array[] $results    [section_label => [files, lines, errors]]
      * @param bool    $wasScrub
      * @return void
      */
@@ -398,8 +428,8 @@ class admin_plugin_hideip extends AdminPlugin
     {
         echo '<h2>' . hsc($heading) . '</h2>';
 
-        $totalFiles = 0;
-        $totalLines = 0;
+        $totalFiles  = 0;
+        $totalLines  = 0;
         $totalErrors = 0;
         foreach ($results as $stats) {
             $totalFiles  += $stats['files'];
@@ -408,18 +438,20 @@ class admin_plugin_hideip extends AdminPlugin
         }
 
         if ($wasScrub) {
-            echo '<p><strong>Done.</strong> Rewrote ' . (int)$totalLines
-                . ' IP slot(s) across ' . (int)$totalFiles . ' file(s).</p>';
+            echo '<p>' . sprintf($this->getLang('done_summary'), $totalLines, $totalFiles) . '</p>';
         } else {
-            echo '<p>Would rewrite ' . (int)$totalLines . ' IP slot(s) across '
-                . (int)$totalFiles . ' file(s).</p>';
+            echo '<p>' . sprintf($this->getLang('preview_summary'), $totalLines, $totalFiles) . '</p>';
         }
 
+        $colSlots = $wasScrub
+            ? $this->getLang('col_slots_rewritten')
+            : $this->getLang('col_slots_pending');
+
         echo '<table class="inline"><thead><tr>'
-            . '<th>Section</th>'
-            . '<th>Files affected</th>'
-            . '<th>IP slots ' . ($wasScrub ? 'rewritten' : 'to rewrite') . '</th>'
-            . '<th>Errors</th>'
+            . '<th>' . hsc($this->getLang('col_section')) . '</th>'
+            . '<th>' . hsc($this->getLang('col_files')) . '</th>'
+            . '<th>' . hsc($colSlots) . '</th>'
+            . '<th>' . hsc($this->getLang('col_errors')) . '</th>'
             . '</tr></thead><tbody>';
         foreach ($results as $label => $stats) {
             echo '<tr>'
@@ -432,7 +464,7 @@ class admin_plugin_hideip extends AdminPlugin
         echo '</tbody></table>';
 
         if ($totalErrors > 0) {
-            echo '<h3>Errors</h3><ul>';
+            echo '<h3>' . hsc($this->getLang('errors_heading')) . '</h3><ul>';
             foreach ($results as $stats) {
                 foreach ($stats['errors'] as $err) {
                     echo '<li><code>' . hsc($err) . '</code></li>';
