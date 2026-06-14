@@ -40,6 +40,10 @@ class admin_plugin_hideip extends AdminPlugin
      *  admin component can run without the action component being loaded. */
     public const PLACEHOLDER_IP = '0.0.0.0';
 
+    /** DokuWiki's hardcoded "external edit" marker. Not a real visitor IP and
+     *  not something this plugin can intercept in real time — see isExemptIp(). */
+    public const LOOPBACK_IP = '127.0.0.1';
+
     /** Random suffix length for tmp files; .hideip_tmp_<8 hex>. */
     public const TMP_SUFFIX_BYTES = 4;
 
@@ -261,6 +265,30 @@ class admin_plugin_hideip extends AdminPlugin
         return $stats;
     }
 
+    /**
+     * Whether an IP value needs no action from the scrub.
+     *
+     * Three cases are exempt:
+     *   - the placeholder itself ('0.0.0.0') — already anonymised (idempotent);
+     *   - blank — already stripped by an older tool (e.g. the GDPR plugin);
+     *   - loopback '127.0.0.1' — DokuWiki hardcodes this as its "external edit"
+     *     marker (inc/ChangeLog/ChangeLog.php) whenever a page file's on-disk
+     *     mtime no longer matches its changelog. It is re-synthesised on every
+     *     view (page metadata) and on the next save (changelog) of such a page,
+     *     so rewriting it is a treadmill. It is also a loopback address, not a
+     *     real visitor IP, so it leaks nothing. We leave it untouched.
+     *
+     * @param string $ip
+     * @return bool
+     */
+    protected function isExemptIp($ip)
+    {
+        $ip = trim($ip);
+        return $ip === ''
+            || $ip === self::PLACEHOLDER_IP
+            || $ip === self::LOOPBACK_IP;
+    }
+
     /* ----------------------------------------------------------------- *
      *  Changelog (.changes) scrubber — TSV format
      * ----------------------------------------------------------------- */
@@ -304,8 +332,7 @@ class admin_plugin_hideip extends AdminPlugin
                 if (count($fields) < 2) continue;           // malformed; leave alone
 
                 $ip = $fields[1];
-                if ($ip === self::PLACEHOLDER_IP) continue; // already scrubbed
-                if (trim($ip) === '') continue;             // already blanked (GDPR-style)
+                if ($this->isExemptIp($ip)) continue;       // placeholder, blank, or loopback marker
 
                 $fields[1] = self::PLACEHOLDER_IP;
                 $lines[$i] = implode("\t", $fields);
@@ -358,7 +385,7 @@ class admin_plugin_hideip extends AdminPlugin
             foreach (['current', 'persistent'] as $branch) {
                 if (
                     isset($meta[$branch]['last_change']['ip'])
-                    && $meta[$branch]['last_change']['ip'] !== self::PLACEHOLDER_IP
+                    && !$this->isExemptIp($meta[$branch]['last_change']['ip'])
                 ) {
                     $meta[$branch]['last_change']['ip'] = self::PLACEHOLDER_IP;
                     $changed++;

@@ -40,6 +40,16 @@ Timestamps, page IDs, usernames, summaries, and size deltas are preserved verbat
 - `data/attic/` and `data/media_attic/` — historical gzip archives of page revisions. Admins generally don't view these; the project's filesystem owner has access to logs anyway. Rewriting them would be slow and require gzip handling for marginal benefit.
 - `data/cache/`, `data/tmp/`, `data/log/`, `data/locks/` — ephemeral or regenerated.
 
+## Why `127.0.0.1` shows up (and why it's left alone)
+
+You may notice `127.0.0.1` in changelog entries (often summarised `external edit`) or in a page's `last_change` metadata, even with real-time anonymisation active and after a scrub. **This is not a real visitor IP and nothing is leaking.**
+
+`127.0.0.1` is a value DokuWiki **hardcodes itself** (`inc/ChangeLog/ChangeLog.php`) as its "external edit" marker — it stamps it whenever a page's on-disk `.txt` modification time no longer matches its changelog, i.e. the file was created or edited directly on disk rather than through the wiki. This is common in container / bind-mounted setups (volume operations, restores, `git` checkouts, an editor touching a file) and also applies to pages DokuWiki ships without a changelog, such as `wiki:syntax`.
+
+Because it's a literal written by core — not derived from `$_SERVER` — the real-time action component cannot intercept it, and core re-creates it on the next view (into page metadata via `pageinfo()`) and on the next save (into the changelog via `detectExternalEdit()`). Scrubbing it would therefore be an endless treadmill, and it's a loopback address that identifies no one.
+
+So **the preview and scrub deliberately ignore `127.0.0.1`** (alongside the `0.0.0.0` placeholder and already-blank values): it is never counted and never rewritten. Real visitor IPs are still anonymised to `0.0.0.0` exactly as before — only this benign loopback marker is left as-is.
+
 ## Page locking still works
 
 For each lock, DokuWiki writes the username if one is set, otherwise IP and session-id. From `inc/common.php`:

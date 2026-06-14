@@ -1,7 +1,7 @@
 base   hideip
 author TrackerUser
-email  -
-date   2026-05-31
+email  for-open-source-projects-trust-building@protonmail.com
+date   2026-06-15
 name   Hide IP
 desc   Anonymizes IP addresses everywhere they could be displayed and provides an admin tool to scrub IPs already recorded on disk
 url    https://github.com/tracker-user/dokuwiki-hideip
