@@ -7,6 +7,8 @@ Removes IP addresses from everywhere a DokuWiki admin might see them. Two parts 
 
 Tested on DokuWiki `2025-05-14b "Librarian"`.
 
+![Admin scrub page with preview showing IP slots to rewrite](images/hideip-screen.png)
+
 ## Why not the existing plugins?
 
 There are three related plugins on dokuwiki.org. None of them quite fit this use case.
