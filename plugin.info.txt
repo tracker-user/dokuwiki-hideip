@@ -4,5 +4,5 @@ email  for-open-source-projects-trust-building@protonmail.com
 date   2026-06-17
 name   Hide IP
 desc   Anonymizes IP addresses everywhere they could be displayed and provides an admin tool to scrub IPs already recorded on disk
-url    https://github.com/tracker-user/dokuwiki-hideip
+url    https://www.dokuwiki.org/plugin:hideip
 phpmin 8.0
